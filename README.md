@@ -5,14 +5,14 @@
 CosyVoice API 是一个用于文本转语音（TTS）的接口，允许用户通过指定文本、模式和其他参数生成语音内容。该 API 支持流式和非流式输出方式，并提供可用音色的列表。
 ## 准备
 cosyvoice-api.py文件放到cosyvoice项目根目录，切换cosyvoice的依赖环境。
-、、、
+```
 pip install fastapi
-、、、
+```
 
 ## 启动
-、、、
+```
 python cosyvoice-api.py --port 50000 --model_dir path/to/your/model（模型路径）
-、、、
+```
 
 ## API 接口
 
