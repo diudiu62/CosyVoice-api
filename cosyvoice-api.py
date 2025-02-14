@@ -7,6 +7,7 @@ import sys
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, Response, JSONResponse
+import uvicorn
 from pydantic import BaseModel
 from typing import Optional
 import numpy as np
@@ -21,15 +22,15 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 允许的来源
+    allow_origins=["*"], 
     allow_credentials=True,
-    allow_methods=["*"],  # 允许的HTTP方法
-    allow_headers=["*"],  # 允许的HTTP头部
+    allow_methods=["*"], 
+    allow_headers=["*"], 
 )
 
 # 读取模组路径
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
-sys.path.append('{}/third_party/Matcha-TTS'.format(ROOT_DIR))
+sys.path.append(f'{ROOT_DIR}/third_party/Matcha-TTS')
 
 class AudioRequest(BaseModel):
     tts_text: str
@@ -42,53 +43,51 @@ class AudioRequest(BaseModel):
     speed: Optional[float] = 1.0
     prompt_voice: Optional[str] = None
 
-
-# 音频生成函数（流式输出）
-async def generate_audio_stream(request: AudioRequest):
+# 音频生成函数
+async def generate_audio(request: AudioRequest):
     set_all_random_seed(request.seed)
-    prompt_speech_16k = load_wav(request.prompt_voice, 16000)
+    prompt_speech_16k = load_wav(request.prompt_voice, 16000) if request.prompt_voice else None
 
-    # 根据模式选择推理方法
-    if request.mode == 'zero_shot':
-        result = await asyncio.to_thread(cosyvoice.inference_zero_shot, request.tts_text, request.prompt_text, prompt_speech_16k, stream=request.stream, speed=request.speed)
-    elif request.mode == 'instruct':
-        result = await asyncio.to_thread(cosyvoice.inference_instruct2, request.tts_text, request.instruct_text, prompt_speech_16k, stream=request.stream, speed=request.speed)
-    elif request.mode == 'sft':
-        result = await asyncio.to_thread(cosyvoice.inference_sft, request.tts_text, request.sft_dropdown, stream=request.stream, speed=request.speed)
-    else:
+    inference_map = {
+        'zero_shot': cosyvoice.inference_zero_shot,
+        'instruct': cosyvoice.inference_instruct2,
+        'sft': cosyvoice.inference_sft
+    }
+
+    if request.mode not in inference_map:
         raise HTTPException(status_code=400, detail="Invalid mode")
+
+    args = None
+    if request.mode == 'sft':
+        args = (request.tts_text, request.sft_dropdown, request.stream, request.speed)
+    elif request.mode == 'zero_shot':
+        args = (request.tts_text, request.prompt_text, prompt_speech_16k, request.stream, request.speed)
+    elif request.mode == 'instruct':
+        args = (request.tts_text, request.instruct_text, prompt_speech_16k, request.stream, request.speed)
+    
+    try:
+        result = await asyncio.to_thread(inference_map[request.mode], *args)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Audio generation error: {str(e)}")
 
     if result is None:
         raise HTTPException(status_code=500, detail="Failed to generate audio")
     
-    # 流式输出
+    return result
+
+# 流式处理
+async def generate_audio_stream(request: AudioRequest):
+    result = await generate_audio(request)
     for i in result:
         audio_data = i['tts_speech'].numpy().flatten()
         audio_bytes = (audio_data * (2**15)).astype(np.int16).tobytes()
         yield audio_bytes
 
-# 音频生成函数（非流式输出）
+# 非流式处理
 async def generate_audio_buffer(request: AudioRequest):
-    set_all_random_seed(request.seed)
-    prompt_speech_16k = load_wav(request.prompt_voice, 16000)
-    
-    # 根据模式选择推理方法
-    if request.mode == 'zero_shot':
-        result = await asyncio.to_thread(cosyvoice.inference_zero_shot, request.tts_text, request.prompt_text, prompt_speech_16k, stream=request.stream, speed=request.speed)
-    elif request.mode == 'instruct':
-        result = await asyncio.to_thread(cosyvoice.inference_instruct2, request.tts_text, request.instruct_text, prompt_speech_16k, stream=request.stream, speed=request.speed)
-    elif request.mode == 'sft':
-        result = await asyncio.to_thread(cosyvoice.inference_sft, request.tts_text, request.sft_dropdown, stream=request.stream, speed=request.speed)
-    else:
-        raise HTTPException(status_code=400, detail="Invalid mode")
-
-    if result is None:
-        raise HTTPException(status_code=500, detail="Failed to generate audio")
-    
-    # 非流式输出
+    result = await generate_audio(request)
     buffer = io.BytesIO()
-    tts_speeches = [j['tts_speech'] for i, j in enumerate(result)]
-    audio_data = torch.concat(tts_speeches, dim=1)
+    audio_data = torch.cat([j['tts_speech'] for j in result], dim=1)
     torchaudio.save(buffer, audio_data, cosyvoice.sample_rate, format="wav")
     buffer.seek(0)
     return buffer
@@ -106,27 +105,17 @@ async def text_tts(request: AudioRequest):
         buffer = await generate_audio_buffer(request)
         return Response(buffer.read(), media_type="audio/wav")
 
-
-# 获音色列表
+# 音色列表
 @app.get("/sft_spk")
 async def get_sft_spk():
-    sft_spk = cosyvoice.list_available_spks()  # 获取音色列表
-    return JSONResponse(content=sft_spk)  # 返回 JSON 格式的响应
-
-
-
+    sft_spk = cosyvoice.list_available_spks()
+    return JSONResponse(content=sft_spk)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--port',
-                        type=int,
-                        default=50000)
-    parser.add_argument('--model_dir',
-                        type=str,
-                        default='pretrained_models/CosyVoice2-0.5B',
-                        help='local path or modelscope repo id')
+    parser.add_argument('--model_dir', type=str, default='pretrained_models/CosyVoice2-0.5B', help='local path or modelscope repo id')
     args = parser.parse_args()
-    # 加载模型
-    cosyvoice = CosyVoice2(args.model_dir, load_jit=False, load_trt=True, fp16=False) 
-    print("默认音色",cosyvoice.list_avaliable_spks())
-    app.run(host='0.0.0.0', port=args.port)
+
+    # 初始化CosyVoice模型
+    cosyvoice = CosyVoice2(args.model_dir, load_jit=False, load_trt=False, fp16=False)
+    uvicorn.run(app, host='0.0.0.0', port=50000)
