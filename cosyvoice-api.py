@@ -4,7 +4,7 @@ import io
 import os
 import sys
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, Response, JSONResponse
 import uvicorn
@@ -32,6 +32,9 @@ app.add_middleware(
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(f'{ROOT_DIR}/third_party/Matcha-TTS')
 
+# 预定义变量
+max_val = 0.8
+
 class AudioRequest(BaseModel):
     tts_text: str
     mode: str
@@ -43,8 +46,9 @@ class AudioRequest(BaseModel):
     speed: Optional[float] = 1.0
     prompt_voice: Optional[str] = None
 
-# 音频生成函数
+
 async def generate_audio(request: AudioRequest):
+    '''音频生成函数'''
     set_all_random_seed(request.seed)
     prompt_speech_16k = load_wav(request.prompt_voice, 16000) if request.prompt_voice else None
 
@@ -75,16 +79,17 @@ async def generate_audio(request: AudioRequest):
     
     return result
 
-# 流式处理
+
 async def generate_audio_stream(request: AudioRequest):
+    '''流式处理，返回音频数据流'''
     result = await generate_audio(request)
     for i in result:
         audio_data = i['tts_speech'].numpy().flatten()
         audio_bytes = (audio_data * (2**15)).astype(np.int16).tobytes()
         yield audio_bytes
 
-# 非流式处理
 async def generate_audio_buffer(request: AudioRequest):
+    '''非流式处理，返回音频数据流'''
     result = await generate_audio(request)
     buffer = io.BytesIO()
     audio_data = torch.cat([j['tts_speech'] for j in result], dim=1)
@@ -104,10 +109,35 @@ async def text_tts(request: AudioRequest):
         # 非流式输出
         buffer = await generate_audio_buffer(request)
         return Response(buffer.read(), media_type="audio/wav")
+    
 
-# 音色列表
+@app.post("/upload_prompt_audio")
+async def prompt(file: UploadFile = File(...)):
+    '''上传用于克隆的音频文件'''
+    if not file.filename.endswith(('.wav', '.WAV', '.mp3')):
+        raise HTTPException(status_code=400, detail="Invalid file type. Only .wav or .mp3 files are accepted.")
+
+    # 读取上传的音频文件
+    audio_data = await file.read()
+
+    # 将其保存到本地
+    output_path = os.path.join("audio_templates", file.filename)
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    # 检查文件是否已经存在
+    if os.path.exists(output_path):
+        return {"filename": file.filename, "message": "Audio file already exists", "path": output_path}
+    
+    # 保存文件
+    with open(output_path, "wb") as f:
+        f.write(audio_data)
+
+    return {"filename": file.filename, "message": "Audio file uploaded successfully", "path": output_path}
+
+
 @app.get("/sft_spk")
 async def get_sft_spk():
+    '''获取系统音色列表'''
     sft_spk = cosyvoice.list_available_spks()
     return JSONResponse(content=sft_spk)
 
