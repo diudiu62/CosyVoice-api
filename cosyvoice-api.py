@@ -79,7 +79,6 @@ async def generate_audio(request: AudioRequest):
     
     return result
 
-
 async def generate_audio_stream(request: AudioRequest):
     '''流式处理，返回音频数据流'''
     result = await generate_audio(request)
@@ -112,7 +111,7 @@ async def text_tts(request: AudioRequest):
     
 
 @app.post("/upload_prompt_audio")
-async def prompt(file: UploadFile = File(...)):
+async def upload_prompt_audio(file: UploadFile = File(...)):
     '''上传用于克隆的音频文件'''
     if not file.filename.endswith(('.wav', '.WAV', '.mp3')):
         raise HTTPException(status_code=400, detail="Invalid file type. Only .wav or .mp3 files are accepted.")
@@ -134,6 +133,17 @@ async def prompt(file: UploadFile = File(...)):
 
     return {"filename": file.filename, "message": "Audio file uploaded successfully", "path": output_path}
 
+@app.get("/audio_templates")
+async def get_audio_templates():
+    '''获取audio_templates文件夹下的音频文件列表'''
+    audio_folder = "audio_templates"
+    try:
+        audio_files = [f for f in os.listdir(audio_folder) if f.endswith(('.wav', '.WAV', '.mp3'))]  # 只筛选.wav和.mp3格式的文件
+        return JSONResponse(content={"status": "success", "data": {"audio_files": audio_files}})
+    except FileNotFoundError:
+        return JSONResponse(content={"status": "error", "message": "Audio templates folder not found"}, status_code=404)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
 
 @app.get("/sft_spk")
 async def get_sft_spk():
